@@ -77,8 +77,8 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
 
 
 def detect(opt):
-    out, source, weights, show_vid, save_vid, save_txt, imgsz = \
-        opt.output, opt.source, opt.weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size
+    out, source, weights, show_vid, save_vid, save_txt, imgsz, rot90cc_vid = \
+        opt.output, opt.source, opt.weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size, opt.rot90cc_vid
     webcam = source == '0' or source.startswith(
         'rtsp') or source.startswith('http') or source.endswith('.txt')
 
@@ -116,7 +116,7 @@ def detect(opt):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz)
+        dataset = LoadImages(source, img_size=imgsz, rot90cc=rot90cc_vid)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -211,6 +211,7 @@ def detect(opt):
             # Stream results
             if show_vid:
                 cv2.imshow(p, im0)
+                if frame_idx == 0: time.sleep(5)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
 
@@ -228,7 +229,8 @@ def detect(opt):
                         fps, w, h = 30, im0.shape[1], im0.shape[0]
                         save_path += '.mp4'
 
-                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    #vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'MJPG'), fps, (w, h))
                 vid_writer.write(im0)
 
     if save_txt or save_vid:
@@ -250,6 +252,7 @@ if __name__ == '__main__':
     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--rot90cc-vid', action='store_true', help='rotate 90 degress cc for landscape video')
     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
     parser.add_argument('--save-txt', action='store_true', help='save MOT compliant results to *.txt')
@@ -263,3 +266,9 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         detect(args)
+
+#python track.py --source "d:\\myData\\VideoClips\\SD1377CAM3.mp4" --show-vid --conf-thres 0.1 --iou-thres 0.2 --weights "D:\\CodeBucket\\Yolov5_DeepSort_Pytorch\\yolov5\\weights\\crowdhuman_yolov5m.pt"
+#python track.py --source "d:\\myData\\VideoClips\\WH7555CAM3.mp4" --show-vid --conf-thres 0.1 --iou-thres 0.2 --weights "D:\\CodeBucket\\Yolov5_DeepSort_Pytorch\\yolov5\\weights\\crowdhuman_yolov5m.pt"
+
+#python track.py --source "d:\\myData\\VideoClips\\SD1377CAM2.mp4" --show-vid --conf-thres 0.2 --iou-thres 0.4 --weights "D:\\CodeBucket\\Yolov5_DeepSort_Pytorch\\yolov5\\weights\\crowdhuman_yolov5m.pt" --rot90cc-vid
+#python track.py --source "d:\\myData\\VideoClips\\WH7555CAM2.mp4" --show-vid --conf-thres 0.2 --iou-thres 0.4 --weights "D:\\CodeBucket\\Yolov5_DeepSort_Pytorch\\yolov5\\weights\\crowdhuman_yolov5m.pt" --rot90cc-vid
