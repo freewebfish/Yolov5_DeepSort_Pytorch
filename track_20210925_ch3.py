@@ -207,9 +207,13 @@ def detect(opt):
     roi_detect = np.array(ZONE_CH5_DETECT).reshape((-1,1,2)).astype(np.int32)     
     roi_silent = np.array(ZONE_CH5_SILENT).reshape((-1,1,2)).astype(np.int32)     
     '''
-    ZONE_CH3_SCREEN = [[0, 600], [0, 300], [150, 300], [150, 600]] #for inside the door    
-    ZONE_CH3_DETECT = [[0, 620], [0, 100], [100, 100], [200, 100], [200, 620], [100, 620]] #for inside the door    
-    ZONE_CH3_SILENT = [[0, 580], [0, 100], [15, 100], [15, 580]] #for dead zone
+    #[2, 700], [2, 50], [380, 50], [380, 700]
+    #ZONE_CH3_DETECT = [[1, 600], [1, 100], [100, 100], [200, 200], [200, 500], [100, 600]] #for inside the door
+    #ZONE_CH3_SILENT = [[1, 540], [1, 150], [50, 150], [150, 250], [150, 500], [50, 540]] #for dead zone
+    ZONE_CH3_SCREEN = [[1, 540], [1, 250], [250, 250], [250, 540]] #for inside the door    
+    ZONE_CH3_DETECT = [[1, 600], [1, 100], [100, 100], [250, 200], [250, 500], [100, 600]] #for inside the door    
+    ZONE_CH3_SILENT = [[1, 540], [1, 200], [80, 340], [70, 540]] #for dead zone
+    #ZONE_CH3_SILENT = [[1, 540], [1, 150], [100, 350], [80, 540]] #for dead zone
     roi_screen = np.array(ZONE_CH3_SCREEN).reshape((-1,1,2)).astype(np.int32)     
     roi_detect = np.array(ZONE_CH3_DETECT).reshape((-1,1,2)).astype(np.int32)     
     roi_silent = np.array(ZONE_CH3_SILENT).reshape((-1,1,2)).astype(np.int32)     
@@ -280,19 +284,15 @@ def detect(opt):
                         xywh_bboxs.append(xywh_obj)
                         confs.append([conf.item()])
                         obj_cls.append([cls.item()])
-                    # pass detections to deepsort
-                    xywhs = torch.Tensor(xywh_bboxs)
-                    confss = torch.Tensor(confs)
-                    outputs = deepsort.update(xywhs, confss, im0)
 
                     # Filter detections before feeding into deepsort tracker
-                    if len(outputs) > 0:
+                    outputs = []
+                    if len(xywh_bboxs) > 0 and len(confs) > 0 and len(obj_cls) > 0:
                         # take out irrelevant detections
                         idx_remove = []
-                        for idx in range(len(outputs)):
-                            [x1, y1, x2, y2] = outputs[idx, :4]
-                            x_c, y_c = int((x1+x2)/2), int((y1+y2)/2)
-                            bbox_w, bbox_h = abs(x2-x1), abs(y2-y1)
+                        for idx in range(len(xywh_bboxs)):
+                            x_c, y_c = xywh_bboxs[idx][0], xywh_bboxs[idx][1]
+                            bbox_w, bbox_h = xywh_bboxs[idx][2], xywh_bboxs[idx][3]
                             box_diagonal = np.sqrt(bbox_h*bbox_h+bbox_w*bbox_w)                                                   
                             pta = [int(x_c - bbox_w / 2), int(y_c + bbox_h / 2)]
                             ptb = [int(x_c - bbox_w / 2), int(y_c - bbox_h / 2)]                            
@@ -313,19 +313,29 @@ def detect(opt):
                             dist_dc02silent = cv2.pointPolygonTest(roi_silent, ptdc0, True)                                                        
                             dist_ab02screen = cv2.pointPolygonTest(roi_screen, ptab0, True)                            
                             dist_ad02screen = cv2.pointPolygonTest(roi_screen, ptad0, True)                                                        
-                            dist_a2silent = cv2.pointPolygonTest(roi_silent, pta, True)
-                            dist_b2silent = cv2.pointPolygonTest(roi_detect, ptb, True)
-                            if ((dist_ab02detect >= 0 and dist_ad02detect >= 0) and \
-                                (dist_ad02screen >= 0) and \
-                                (box_diagonal >= 250 and box_diagonal <= 550 and bbox_w >= 90 and bbox_w <= 200 and bbox_h <= 350 and bbox_h >= 150)):
+                            '''
+                            if ((dist_a2detect >= 0 or dist_b2detect >= 0) and \
+                                (dist_ab02detect >= 0 or dist_ad02detect >= 0) and \
+                                (box_diagonal >= 200 and box_diagonal <= 550)):
+                            '''
+                            if ((dist_ab02screen >= 0 and dist_ad02screen >= 0) and \
+                                (dist_dc02silent <= -40) and \
+                                (box_diagonal >= 250 and box_diagonal <= 650)):
                                 if show_vid and show_det:
-                                    cc = 0.0 
+                                    cc = obj_cls[idx][0] 
                                     plot_one_box([ptb[0], ptb[1], ptd[0], ptd[1]], im0, \
-                                    label=f'{names[int(cc)]} {conf:.3f}', color=colors(cc, True), line_thickness=2)
+                                    label=f'{names[int(cc)]} {conf:.2f}', color=colors(cc, True), line_thickness=2)
                             else:
                                 idx_remove.append(idx)
-                        outputs = np.delete(outputs, idx_remove, axis=0)
+                        xywh_bboxs = np.delete(xywh_bboxs, idx_remove, axis=0)
+                        confs = np.delete(confs, idx_remove, axis=0)
+                        obj_cls = np.delete(obj_cls, idx_remove, axis=0)                        
                        
+                        # pass detections to deepsort
+                        xywhs = torch.Tensor(xywh_bboxs)
+                        confss = torch.Tensor(confs)
+                        outputs = deepsort.update(xywhs, confss, im0)
+
                     # Count passengers
                     if len(outputs) > 0:
                         bbox_xyxy = outputs[:, :4]
@@ -358,10 +368,6 @@ def detect(opt):
                                 dist_n22silent = cv2.pointPolygonTest(roi_silent, [int(xn2), int(yn2)], True)
                                 dist_n12detect = cv2.pointPolygonTest(roi_detect, [int(xn1), int(yn1)], True)
                                 dist_n22detect = cv2.pointPolygonTest(roi_detect, [int(xn2), int(yn2)], True)
-                                dist_n1a2silent = cv2.pointPolygonTest(roi_silent, [int(xn1 - wn1/2), int(yn1 + hn1/2)], True)
-                                dist_n1b2silent = cv2.pointPolygonTest(roi_silent, [int(xn1 - wn1/2), int(yn1 - hn1/2)], True)                                
-                                dist_n2a2silent = cv2.pointPolygonTest(roi_silent, [int(xn2 - wn2/2), int(yn2 + hn2/2)], True)
-                                dist_n2b2silent = cv2.pointPolygonTest(roi_silent, [int(xn2 - wn2/2), int(yn2 - hn2/2)], True)                                
                                 elapsed_frames = n2 - n1
                                 ifound = False
                                 ds = [xn2-xn1, yn2-yn1]
@@ -369,76 +375,6 @@ def detect(opt):
                                 if displacement > 0: dv=[ds[0]/displacement, ds[1]/displacement]                                
                                 else: dv=[-1, 0]                                
                                 dphi = int(math.acos(np.dot(dv, XV))/math.pi*180) 
-
-                                if dist_n2a2silent >= 0 and dist_n2b2silent >= 0 and \
-                                    hn2 <= 350 and hn2 >= 150 and wn2 <= 250 and wn2 >= 80 and hn2 >= wn2: 
-                                    ppl_out += 1
-                                    ppl_count += 1
-                                    if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                    passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                    ifound = True
-
-                                '''
-                                if dist_n1a2silent < 0 and dist_n1b2silent < 0 and dist_n2a2silent >= 0 and dist_n2b2silent >= 0:
-                                    if elapsed_frames >= 3 and displacement >= 30:
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                elif dist_n1a2silent >= 0 and dist_n1b2silent >= 0 and dist_n2a2silent < 0 and dist_n2b2silent < 0:
-                                    if elapsed_frames >= 3 and displacement >= 30:
-                                        ppl_in += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                elif dist_n1a2silent >= 0 and dist_n1b2silent >= 0 and dist_n2a2silent >= 0 and dist_n2b2silent >= 0:
-                                    if elapsed_frames >= 3 and displacement >= 12:
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                    elif elapsed_frames < 4 and displacement <= 20 and displacement >= 3:
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                '''
-
-                                '''
-                                if dist_n1a2silent < 0 and dist_n1b2silent < 0 and dist_n2a2silent >= 0 and dist_n2b2silent >= 0 and hn1*wn1 > hn2*wn2:
-                                    if elapsed_frames >= 3 and displacement >= 30:
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                elif dist_n1a2silent >= 0 and dist_n1b2silent >= 0 and dist_n2a2silent < 0 and dist_n2b2silent < 0 and hn1*wn1 < hn2*wn2:
-                                    if elapsed_frames >= 3 and displacement >= 30:
-                                        ppl_in += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True                                
-                                elif dist_n1a2silent >= 0 and dist_n1b2silent >= 0 and dist_n2a2silent >= 0 and dist_n2b2silent >= 0 and hn2 > wn2:
-                                    if elapsed_frames >= 3 and displacement >= 30:
-                                        if dphi > PHI0: ppl_out += 1
-                                        else: ppl_in += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True                                
-                                    elif elapsed_frames < 5 and displacement <= 15:    
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True
-                                '''
-                                '''
                                 if elapsed_frames >= 5 and displacement >= 50:
                                     if dist_n12silent < 0 and dist_n22silent >= 0:  #start and end points are outside the detect zone
                                         ppl_out += 1  
@@ -497,7 +433,55 @@ def detect(opt):
                                     ifound = True
                                 else:
                                     pass                                            
-                                '''
+
+
+                                    '''
+                                    if dist_n12detect < 0 and dist_n22detect < 0:  #start and end points are outside the detect zone
+                                        pass
+                                    elif dist_n12detect < 0 and dist_n22detect >= 0:  #start point outside and end point inside the detect zone
+                                        if dist_n22silent >= 0:
+                                            ppl_out += 1  
+                                            ppl_count += 1
+                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
+                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
+                                            ifound = True                                            
+                                        else:    
+                                            pass
+                                    elif dist_n12detect >= 0 and dist_n22detect < 0:  #start point inside and end point outside the detect zone                                           
+                                        if dist_n12silent >= 0:
+                                            ppl_in += 1  
+                                            ppl_count += 1
+                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
+                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
+                                            ifound = True                                            
+                                        else:    
+                                            pass
+                                    elif dist_n12detect >= 0 and dist_n22detect >= 0: #start and end point inside the detect zone
+                                        if dist_n12silent >= 0 and dist_n22silent >= 0:
+                                            pass
+                                        elif dist_n12silent >= 0 and dist_n22silent < 0:  
+                                            ppl_in += 1  
+                                            ppl_count += 1
+                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
+                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
+                                            ifound = True                                            
+                                        elif dist_n12silent < 0 and dist_n22silent >= 0:  
+                                            ppl_out += 1    
+                                            ppl_count += 1                                          
+                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
+                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
+                                            ifound = True                                            
+                                        else:
+                                            pass
+                                        '''
+                                    '''
+                                    if dphi > PHI0: ppl_out += 1  
+                                    else: ppl_in += 1
+                                    ppl_count += 1
+                                    if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
+                                    passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
+                                    ifound = True                                            
+                                    '''
 
                     identities_prev = identities
                     bbox_xyxy_prev = bbox_xyxy 
@@ -671,18 +655,5 @@ DEEPSORT:
   MAX_IOU_DISTANCE: 0.7
   MAX_AGE: 10
   N_INIT: 2
-  NN_BUDGET: 100
-'''
-'''
-09/25/2021
-python track.py --source "d:\\myData\\Bus\\20210824_180000_ch3_test.mp4" --vid-channel 'ch3' --conf-thres 0.05 --iou-thres 0.4 --step-frames 2 --show-vid --img-size 320 
-DEEPSORT:
-  REID_CKPT: "deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7"
-  MAX_DIST: 0.4
-  MIN_CONFIDENCE: 0.05
-  NMS_MAX_OVERLAP: 0.5
-  MAX_IOU_DISTANCE: 0.7
-  MAX_AGE: 10
-  N_INIT: 1
   NN_BUDGET: 100
 '''  
