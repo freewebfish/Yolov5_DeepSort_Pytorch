@@ -1,6 +1,7 @@
 import sys
 sys.path.insert(0, './yolov5')
 
+from yolov5.utils.google_utils import attempt_download
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
 from yolov5.utils.general import check_img_size, non_max_suppression, scale_coords, \
@@ -30,18 +31,6 @@ passenger_out = {}
 
 def Diff(li1, li2):
     return list(set(li1) - set(li2))
-
-def xyxy_to_xywh(*xyxy):
-    """" Calculates the relative bounding box from absolute pixel values. """
-    bbox_left = min([xyxy[0].item(), xyxy[2].item()])
-    bbox_top = min([xyxy[1].item(), xyxy[3].item()])
-    bbox_w = abs(xyxy[0].item() - xyxy[2].item())
-    bbox_h = abs(xyxy[1].item() - xyxy[3].item())
-    x_c = (bbox_left + bbox_w / 2)
-    y_c = (bbox_top + bbox_h / 2)
-    w = bbox_w
-    h = bbox_h
-    return x_c, y_c, w, h
 
 def xyxy_to_tlwh(bbox_xyxy):
     tlwh_bboxs = []
@@ -148,15 +137,15 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0), trailslen=20):
 
 
 def detect(opt):
-    out, source, weights, show_vid, save_vid, save_txt, imgsz, vid_channel, show_roi, show_mask, show_det, step_frames= \
-        opt.output, opt.source, opt.weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size, \
-        opt.vid_channel, opt.show_roi, opt.show_mask, opt.show_det, opt.step_frames
+    out, source, weights, show_vid, save_vid, save_txt, imgsz = \
+        opt.output, opt.source, opt.weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size
     webcam = source == '0' or source.startswith(
         'rtsp') or source.startswith('http') or source.endswith('.txt')
 
     # initialize deepsort
     cfg = get_config()
     cfg.merge_from_file(opt.config_deepsort)
+    attempt_download(deep_sort_weights, repo='mikel-brostrom/Yolov5_DeepSort_Pytorch')
     deepsort = DeepSort(cfg.DEEPSORT.REID_CKPT,
                         max_dist=cfg.DEEPSORT.MAX_DIST, min_confidence=cfg.DEEPSORT.MIN_CONFIDENCE,
                         nms_max_overlap=cfg.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg.DEEPSORT.MAX_IOU_DISTANCE,
@@ -165,13 +154,18 @@ def detect(opt):
 
     # Initialize
     device = select_device(opt.device)
-    if os.path.exists(out):
-        shutil.rmtree(out)  # delete output folder
-    os.makedirs(out)  # make new output folder
+
+    # The MOT16 evaluation runs multiple inference streams in parallel, each one writing to
+    # its own .txt file. Hence, in that case, the output folder is not restored
+    if not evaluate:
+        if os.path.exists(out):
+            pass
+            shutil.rmtree(out)  # delete output folder
+        os.makedirs(out)  # make new output folder
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
-    model = attempt_load(weights, map_location=device)  # load FP32 model
+    model = attempt_load(yolo_weights, map_location=device)  # load FP32 model
     stride = int(model.stride.max())  # model stride
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
     names = model.module.names if hasattr(model, 'module') else model.names  # get class names
@@ -199,7 +193,9 @@ def detect(opt):
     t0 = time.time()
 
     save_path = str(Path(out))
-    txt_path = str(Path(out)) + '/results.txt'
+    # extract what is in between the last '/' and last '.'
+    txt_file_name = source.split('/')[-1].split('.')[0]
+    txt_path = str(Path(out)) + '/' + txt_file_name + '.txt'
 
     '''
     ZONE_CH5_DETECT = [[300, 576], [300, 380], [380, 390], [550, 570], [550, 576]] #for inside the door
@@ -263,155 +259,42 @@ def detect(opt):
                         n = (det[:, -1] == c).sum()  # detections per class
                         s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
-                    '''
-                    # Show detection boxes
-                    if show_vid:  # Add bbox to image, before feeding into deepsort tracker
-                        for *xyxy, conf, cls in reversed(det):
-                            cc = int(cls)  # integer class
-                            label = f'{names[cc]} {conf:.2f}'
-                            plot_one_box(xyxy, im0, label=label, color=colors(cc, True), line_thickness=2)
-                    '''
+                xywh_bboxs = []
+                confs = []
 
-                    # Adapt detections to deep sort input format
-                    xywh_bboxs = []
-                    confs = []
-                    obj_cls = []
-                    for *xyxy, conf, cls in det:
-                        # to deep sort format
-                        x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
-                        xywh_obj = [x_c, y_c, bbox_w, bbox_h]
-                        xywh_bboxs.append(xywh_obj)
-                        confs.append([conf.item()])
-                        obj_cls.append([cls.item()])
+                # Adapt detections to deep sort input format
+                for *xyxy, conf, cls in det:
+                    # to deep sort format
+                    x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
+                    xywh_obj = [x_c, y_c, bbox_w, bbox_h]
+                    xywh_bboxs.append(xywh_obj)
+                    confs.append([conf.item()])
 
-                    # Filter detections before feeding into deepsort tracker
-                    outputs = []
-                    if len(xywh_bboxs) > 0 and len(confs) > 0 and len(obj_cls) > 0:
-                        # take out irrelevant detections
-                        idx_remove = []
-                        for idx in range(len(xywh_bboxs)):
-                            x_c, y_c = xywh_bboxs[idx][0], xywh_bboxs[idx][1]
-                            bbox_w, bbox_h = xywh_bboxs[idx][2], xywh_bboxs[idx][3]
-                            box_diagonal = np.sqrt(bbox_h*bbox_h+bbox_w*bbox_w)                                                   
-                            dist_ctr2screen = cv2.pointPolygonTest(roi_screen, [x_c, y_c], True)                             
-                            dist_ctr2silent = cv2.pointPolygonTest(roi_silent, [x_c, y_c], True)                                                         
-                            if ((dist_ctr2screen >= 0 and bbox_h/bbox_w <= 3) and\
-                                (box_diagonal >= 150 and box_diagonal <= 550)):
-                                if show_vid and show_det:
-                                    cc = obj_cls[idx][0] 
-                                    plot_one_box([x_c-bbox_w/2, y_c-bbox_h/2, x_c+bbox_w/2, y_c+bbox_h/2], im0, \
-                                    label=f'{names[int(cc)]} {conf:.2f}', color=colors(cc, True), line_thickness=2)
-                            else:
-                                idx_remove.append(idx)
-                        xywh_bboxs = np.delete(xywh_bboxs, idx_remove, axis=0)
-                        confs = np.delete(confs, idx_remove, axis=0)
-                        obj_cls = np.delete(obj_cls, idx_remove, axis=0)                        
-                       
-                        # pass detections to deepsort
-                        xywhs = torch.Tensor(xywh_bboxs)
-                        confss = torch.Tensor(confs)
-                        outputs = deepsort.update(xywhs, confss, im0)
-                       
-                    # Count passengers
-                    if len(outputs) > 0:
-                        bbox_xyxy = outputs[:, :4]
-                        identities = outputs[:, -1]
-                    else:
-                        bbox_xyxy = []
-                        identities = []
-                    
-                    ids_emerging = Diff(identities, identities_prev)
-                    if (len(ids_emerging) > 0):
-                        for idx in range(len(ids_emerging)):
-                            key = int(ids_emerging[idx]) 
-                            [x1, y1, x2, y2] = bbox_xyxy[identities==key][0]
-                            if key not in list(passenger_in): passenger_in[key] = deque(maxlen=1)
-                            passenger_in[key]=(frame_idx, int((x1+x2)/2), int((y1+y2)/2), int(abs(x2-x1)), int(abs(y2-y1)))
+                xywhs = torch.Tensor(xywh_bboxs)
+                confss = torch.Tensor(confs)
 
-                    ids_gone = Diff(identities_prev, identities)
-                    if (len(ids_gone) > 0):
-                        for idx in range(len(ids_gone)):
-                            key = int(ids_gone[idx])
-                            [x1, y1, x2, y2] = bbox_xyxy_prev[identities_prev==key][0]
-                            if key not in list(passenger_out): passenger_out[key] = deque(maxlen=1)
-                            passenger_out[key]=(frame_idx, int((x1+x2)/2), int((y1+y2)/2), int(abs(x2-x1)), int(abs(y2-y1)))
-                            if key in list(passenger_in) and key in list(passenger_out):
-                                (n1, xn1, yn1, wn1, hn1) = passenger_in[key]
-                                (n2, xn2, yn2, wn2, hn2) = passenger_out[key]
-                                passenger_in.pop(key)
-                                passenger_out.pop(key)
-                                box_diagonal1 = np.sqrt(hn1*hn1+wn1*wn1)                                                   
-                                box_diagonal2 = np.sqrt(hn2*hn2+wn2*wn2)                                                   
-                                dist_n12silent = cv2.pointPolygonTest(roi_silent, [int(xn1), int(yn1)], True)
-                                dist_n22silent = cv2.pointPolygonTest(roi_silent, [int(xn2), int(yn2)], True)
-                                dist_n12screen = cv2.pointPolygonTest(roi_screen, [int(xn1), int(yn1)], True)
-                                dist_n22screen = cv2.pointPolygonTest(roi_screen, [int(xn2), int(yn2)], True)
-                                dist_ab012silent = cv2.pointPolygonTest(roi_silent, [int(xn1-wn1/2), int(yn1)], True)
-                                dist_ab022silent = cv2.pointPolygonTest(roi_silent, [int(xn2-wn2/2), int(yn2)], True)                                
-                                dist_ad012silent = cv2.pointPolygonTest(roi_silent, [int(xn1), int(yn1+hn1/2)], True)
-                                dist_ad022silent = cv2.pointPolygonTest(roi_silent, [int(xn2), int(yn2+hn2/2)], True)                                
-                                elapsed_frames = n2 - n1
-                                ifound = False
-                                ds = [xn2-xn1, yn2-yn1]
-                                displacement=np.linalg.norm(ds, ord=1)
-                                if displacement > 0: dv=[ds[0]/displacement, ds[1]/displacement]                                
-                                else: dv=[-1, 0]                                
-                                dphi = int(math.acos(np.dot(dv, XV))/math.pi*180)
+                # pass detections to deepsort
+                outputs = deepsort.update(xywhs, confss, im0)
 
-                                if (box_diagonal1 >= 200 and box_diagonal1 <= 500 and box_diagonal2 >= 200 and box_diagonal2 <= 500 and\
-                                    hn2/wn2 <= 3 and hn1/wn1 <=3):
-                                    if (dist_n22silent >= 0 and dist_n12silent <= 0 and dist_n22silent - dist_n12silent >= 30):
-                                        ppl_out += 1
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True            
-                                    elif (dist_n22silent < 0 and dist_n12silent > 0 and dist_n22silent - dist_n12silent <= -30):
-                                        ppl_out += 1                                    
-                                        ppl_count += 1
-                                        if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                        passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                        ifound = True                                            
-                                    elif (dist_n22silent >= 0 and dist_n12silent >= 0):
-                                        if (abs(dist_n22silent - dist_n12silent) <= 3 and displacement <= 3):
-                                            ppl_out += 1
-                                            ppl_count += 1
-                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                            ifound = True
-                                        elif (elapsed_frames >= 3 and displacement >= 5):
-                                            ppl_out += 1
-                                            ppl_count += 1
-                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                            ifound = True
-                                    elif (dist_n22silent >= -60 and dist_n22silent < 0 and dist_n12silent >= -120 and dist_n12silent < 0):
-                                        if (elapsed_frames >= 1 and displacement > 0 ):
-                                            ppl_out += 1
-                                            ppl_count += 1
-                                            if ppl_count not in list(passenger_deque): passenger_deque[ppl_count] = deque(maxlen=1)
-                                            passenger_deque[ppl_count]=(int(xn2), int(yn2), int(xn1), int(yn1))
-                                            ifound = True
-                                    elif (dist_n22silent < -60 and dist_n12silent < -60):
-                                        pass
+                # draw boxes for visualization
+                if len(outputs) > 0:
+                    bbox_xyxy = outputs[:, :4]
+                    identities = outputs[:, -1]
+                    draw_boxes(im0, bbox_xyxy, identities)
+                    # to MOT format
+                    tlwh_bboxs = xyxy_to_tlwh(bbox_xyxy)
 
-                    identities_prev = identities
-                    bbox_xyxy_prev = bbox_xyxy 
-
-                    if len(outputs) > 0:
-                        im0 = draw_boxes(im0, bbox_xyxy, identities, trailslen=trailslen)
-                        # to MOT format
-                        tlwh_bboxs = xyxy_to_tlwh(bbox_xyxy)
-                        # Write MOT compliant results to file
-                        if save_txt:
-                            for j, (tlwh_bbox, output) in enumerate(zip(tlwh_bboxs, outputs)):
-                                bbox_top = tlwh_bbox[0]
-                                bbox_left = tlwh_bbox[1]
-                                bbox_w = tlwh_bbox[2]
-                                bbox_h = tlwh_bbox[3]
-                                identity = output[-1]
-                                with open(txt_path, 'a') as f:
-                                    f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top, bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
+                    # Write MOT compliant results to file
+                    if save_txt:
+                        for j, (tlwh_bbox, output) in enumerate(zip(tlwh_bboxs, outputs)):
+                            bbox_top = tlwh_bbox[0]
+                            bbox_left = tlwh_bbox[1]
+                            bbox_w = tlwh_bbox[2]
+                            bbox_h = tlwh_bbox[3]
+                            identity = output[-1]
+                            with open(txt_path, 'a') as f:
+                                f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top,
+                                                            bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
 
                 else:
                     deepsort.increment_ages()
@@ -465,7 +348,7 @@ def detect(opt):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='yolov5/weights/yolov5l.pt', help='model.pt path')
+    parser.add_argument('--weights', type=str, default='yolov5/weights/yolov5s.pt', help='model.pt path')
     # file/folder, 0 for webcam
     parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
@@ -482,10 +365,11 @@ if __name__ == '__main__':
     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
     parser.add_argument('--save-txt', action='store_true', help='save MOT compliant results to *.txt')
-    # class 0 is person, 1 is bycicle, 2 is car, 32 is sports ball, ... 79 is oven
-    parser.add_argument('--classes', nargs='+', default=0, type=int, help='filter by class')
+    # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
+    parser.add_argument('--classes', nargs='+', default=[0], type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
+    parser.add_argument('--evaluate', action='store_true', help='augmented inference')
     parser.add_argument("--config_deepsort", type=str, default="deep_sort_pytorch/configs/deep_sort.yaml")
     args = parser.parse_args()
     args.img_size = check_img_size(args.img_size)
